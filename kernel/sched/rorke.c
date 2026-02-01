@@ -6,7 +6,7 @@
 #include <linux/sched/rorke.h>
 
 #define DEBUG(rq, fmt, ...) \
-	printk(KERN_ERR "wfq[cpu=%d] " fmt, cpu_of(rq), ##__VA_ARGS__) \
+	printk(KERN_ERR "rorke[cpu=%d] " fmt, cpu_of(rq), ##__VA_ARGS__) \
 
 void init_rk_rq(struct rk_rq *rk_rq)
 {
@@ -127,7 +127,7 @@ static void task_tick_rk(struct rq *rq, struct task_struct *p, int queued)
 {
 	struct rk_rq *rk_rq = &rq->rk;
 
-	if (rk_rq->curr == p && p->rk.start_exec_ns + RORKE_TIMESLICE < rq_clock_task(rq)) {
+	if (rk_rq->curr == p && rk_rq->nr_running > 1 && p->rk.start_exec_ns + RORKE_TIMESLICE < rq_clock_task(rq)) {
 		DEBUG(rq, "task_tick resched pid=%d\n", task_pid_nr(p));
 		resched_curr(rq);
 	}
