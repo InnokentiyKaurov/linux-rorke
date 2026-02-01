@@ -79,6 +79,7 @@ struct robust_list_head;
 struct root_domain;
 struct rq;
 struct sched_attr;
+struct sched_rk_entity;
 struct sched_dl_entity;
 struct seq_file;
 struct sighand_struct;
@@ -747,6 +748,12 @@ struct sched_dl_entity {
 #endif
 };
 
+struct sched_rk_entity {
+	struct list_head run_node;
+	bool on_rq;
+	u64 start_exec_ns;
+};
+
 #ifdef CONFIG_UCLAMP_TASK
 /* Number of utilization clamp buckets (shorter alias) */
 #define UCLAMP_BUCKETS CONFIG_UCLAMP_BUCKETS_COUNT
@@ -868,6 +875,7 @@ struct task_struct {
 	unsigned int			rt_priority;
 
 	struct sched_entity		se;
+	struct sched_rk_entity		rk;
 	struct sched_rt_entity		rt;
 	struct sched_dl_entity		dl;
 	struct sched_dl_entity		*dl_server;

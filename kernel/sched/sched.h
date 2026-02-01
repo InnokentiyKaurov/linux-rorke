@@ -212,10 +212,15 @@ static inline int dl_policy(int policy)
 	return policy == SCHED_DEADLINE;
 }
 
+static inline int rk_policy(int policy)
+{
+	return policy == SCHED_RORKE;
+}
+
 static inline bool valid_policy(int policy)
 {
 	return idle_policy(policy) || fair_policy(policy) ||
-		rt_policy(policy) || dl_policy(policy);
+		rt_policy(policy) || dl_policy(policy) || rk_policy(policy);
 }
 
 static inline int task_has_idle_policy(struct task_struct *p)
@@ -916,6 +921,12 @@ struct dl_rq {
 	u64			bw_ratio;
 };
 
+struct rk_rq {
+	struct list_head queue;
+	struct task_struct *curr;
+	unsigned int nr_running;
+};
+
 #ifdef CONFIG_FAIR_GROUP_SCHED
 
 /* An entity is a task if it doesn't "own" a runqueue */
@@ -1147,6 +1158,7 @@ struct rq {
 #endif
 
 	struct cfs_rq		cfs;
+	struct rk_rq		rk;
 	struct rt_rq		rt;
 	struct dl_rq		dl;
 #ifdef CONFIG_SCHED_CLASS_EXT
@@ -2687,6 +2699,7 @@ const struct sched_class name##_sched_class \
 extern struct sched_class __sched_class_highest[];
 extern struct sched_class __sched_class_lowest[];
 
+extern const struct sched_class rorke_sched_class;
 extern const struct sched_class stop_sched_class;
 extern const struct sched_class dl_sched_class;
 extern const struct sched_class rt_sched_class;
@@ -2851,6 +2864,8 @@ extern void init_rt_bandwidth(struct rt_bandwidth *rt_b, u64 period, u64 runtime
 extern bool sched_rt_bandwidth_account(struct rt_rq *rt_rq);
 
 extern void init_dl_entity(struct sched_dl_entity *dl_se);
+
+extern void init_rk_entity(struct sched_rk_entity *dl_se);
 
 extern void init_cfs_throttle_work(struct task_struct *p);
 
@@ -3264,6 +3279,7 @@ print_numa_stats(struct seq_file *m, int node, unsigned long tsf,
 extern void init_cfs_rq(struct cfs_rq *cfs_rq);
 extern void init_rt_rq(struct rt_rq *rt_rq);
 extern void init_dl_rq(struct dl_rq *dl_rq);
+extern void init_rk_rq(struct rk_rq *rk_rq);
 
 extern void cfs_bandwidth_usage_inc(void);
 extern void cfs_bandwidth_usage_dec(void);

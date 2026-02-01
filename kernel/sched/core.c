@@ -1336,6 +1336,10 @@ bool sched_can_stop_tick(struct rq *rq)
 {
 	int fifo_nr_running;
 
+	/* If multiple Rorke tasks, need the tick */
+	if (rq->rk.nr_running > 1)
+		return false;
+
 	/* Deadline tasks, even if single, need the tick */
 	if (rq->dl.dl_nr_running)
 		return false;
@@ -4390,6 +4394,8 @@ static void __sched_fork(u64 clone_flags, struct task_struct *p)
 	memset(&p->stats, 0, sizeof(p->stats));
 #endif
 
+	init_rk_entity(&p->rk);
+
 	init_dl_entity(&p->dl);
 
 	INIT_LIST_HEAD(&p->rt.run_list);
@@ -4644,7 +4650,9 @@ int sched_fork(u64 clone_flags, struct task_struct *p)
 
 	scx_pre_fork(p);
 
-	if (rt_prio(p->prio)) {
+	if (rk_policy(p->policy)) {
+		p->sched_class = &rorke_sched_class;
+	} else if (rt_prio(p->prio)) {
 		p->sched_class = &rt_sched_class;
 #ifdef CONFIG_SCHED_CLASS_EXT
 	} else if (task_should_scx(p->policy)) {
@@ -7209,6 +7217,8 @@ EXPORT_SYMBOL(default_wake_function);
 
 const struct sched_class *__setscheduler_class(int policy, int prio)
 {
+	if (rk_policy(policy))
+		return &rorke_sched_class;
 	if (dl_prio(prio))
 		return &dl_sched_class;
 
@@ -8548,6 +8558,7 @@ void __init sched_init(void)
 	int i;
 
 	/* Make sure the linker didn't screw up */
+	BUG_ON(!sched_class_above(&rorke_sched_class, &stop_sched_class));
 	BUG_ON(!sched_class_above(&stop_sched_class, &dl_sched_class));
 	BUG_ON(!sched_class_above(&dl_sched_class, &rt_sched_class));
 	BUG_ON(!sched_class_above(&rt_sched_class, &fair_sched_class));
