@@ -6,7 +6,8 @@
 #include <linux/sched/rorke.h>
 
 #define DEBUG(rq, fmt, ...) \
-	printk(KERN_ERR "rorke[cpu=%d] " fmt, cpu_of(rq), ##__VA_ARGS__) \
+	do {} while (0)
+	// printk(KERN_ERR "rorke[cpu=%d] " fmt, cpu_of(rq), ##__VA_ARGS__) \
 
 void init_rk_rq(struct rk_rq *rk_rq)
 {

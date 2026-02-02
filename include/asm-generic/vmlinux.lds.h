@@ -153,9 +153,9 @@
 #define SCHED_DATA				\
 	STRUCT_ALIGN();				\
 	__sched_class_highest = .;		\
-	*(__rorke_sched_class)			\
 	*(__stop_sched_class)			\
 	*(__dl_sched_class)			\
+	*(__rorke_sched_class)			\
 	*(__rt_sched_class)			\
 	*(__fair_sched_class)			\
 	*(__ext_sched_class)			\
