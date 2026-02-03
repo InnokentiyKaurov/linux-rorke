@@ -1337,7 +1337,7 @@ bool sched_can_stop_tick(struct rq *rq)
 	int fifo_nr_running;
 
 	/* If multiple Rorke tasks, need the tick */
-	if (rq->rk.nr_running > 1)
+	if (!rk_can_stop_tick(rq))
 		return false;
 
 	/* Deadline tasks, even if single, need the tick */
@@ -8552,6 +8552,8 @@ LIST_HEAD(task_groups);
 static struct kmem_cache *task_group_cache __ro_after_init;
 #endif
 
+struct rk_dsq *rk_dsq;
+
 void __init sched_init(void)
 {
 	unsigned long ptr = 0;
@@ -8617,6 +8619,8 @@ void __init sched_init(void)
 	INIT_LIST_HEAD(&root_task_group.siblings);
 	autogroup_init(&init_task);
 #endif /* CONFIG_CGROUP_SCHED */
+
+	init_rk_dsq(rk_dsq);
 
 	for_each_possible_cpu(i) {
 		struct rq *rq;

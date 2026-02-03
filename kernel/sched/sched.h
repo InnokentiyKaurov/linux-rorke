@@ -922,9 +922,16 @@ struct dl_rq {
 };
 
 struct rk_rq {
-	struct list_head queue;
 	struct task_struct *curr;
-	unsigned int nr_running;
+	u64					timeslice; // ns
+};
+
+struct rk_dsq {
+	spinlock_t			lock;
+	struct list_head	list;
+	u32					nr_queued;
+	u32					nr_running;
+	u64					timeslice; // ns
 };
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
@@ -3279,7 +3286,10 @@ print_numa_stats(struct seq_file *m, int node, unsigned long tsf,
 extern void init_cfs_rq(struct cfs_rq *cfs_rq);
 extern void init_rt_rq(struct rt_rq *rt_rq);
 extern void init_dl_rq(struct dl_rq *dl_rq);
+extern void init_rk_dsq(struct rk_dsq *dsq);
 extern void init_rk_rq(struct rk_rq *rk_rq);
+
+extern bool rk_can_stop_tick(struct rq *rq);
 
 extern void cfs_bandwidth_usage_inc(void);
 extern void cfs_bandwidth_usage_dec(void);

@@ -749,9 +749,11 @@ struct sched_dl_entity {
 };
 
 struct sched_rk_entity {
-	struct list_head run_node;
-	bool on_rq;
-	u64 start_exec_ns;
+	struct list_head 	run_node;
+	bool 				on_rq;
+	bool 				on_dsq;
+	struct rq 			*rq;
+	u64 				start_exec_ns;
 };
 
 #ifdef CONFIG_UCLAMP_TASK

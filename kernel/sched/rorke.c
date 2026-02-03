@@ -9,33 +9,75 @@
 	do {} while (0)
 	// printk(KERN_ERR "rorke[cpu=%d] " fmt, cpu_of(rq), ##__VA_ARGS__) \
 
+extern struct rk_dsq *rk_dsq;
+
+void lock_dsq(struct rq *rq);
+void unlock_dsq(struct rq *rq);
+
+void init_rk_dsq(struct rk_dsq *dsq)
+{
+	spin_lock_init(&dsq->lock);
+    INIT_LIST_HEAD(&dsq->list);
+	dsq->nr_queued = 0;
+	dsq->nr_running = 0;
+	dsq->timeslice = RORKE_DEFAULT_TIMESLICE;
+}
+
 void init_rk_rq(struct rk_rq *rk_rq)
 {
-	INIT_LIST_HEAD(&rk_rq->queue);
 	rk_rq->curr = NULL;
-	rk_rq->nr_running = 0;
+	rk_rq->timeslice = RORKE_DEFAULT_TIMESLICE;
 }
 
 void init_rk_entity(struct sched_rk_entity *entity)
 {
 	INIT_LIST_HEAD(&entity->run_node);
 	entity->on_rq = 0;
+	entity->on_dsq = 0;
+	entity->rq = NULL;
 	entity->start_exec_ns = 0;
+}
+
+void lock_dsq(struct rq *rq)
+{
+	spin_lock(&rk_dsq->lock);
+	rq->rk.timeslice = rk_dsq->timeslice; // piggyback timeslice update
+}
+
+void unlock_dsq(struct rq *rq)
+{
+	spin_unlock(&rk_dsq->lock);
+}
+
+bool rk_can_stop_tick(struct rq *rq)
+{
+	bool no_rorke_tasks;
+
+	lock_dsq(rq);
+	no_rorke_tasks = (rk_dsq->nr_running == 0);
+	unlock_dsq(rq);
+
+	return no_rorke_tasks;
 }
 
 static void enqueue_task_rk(struct rq *rq, struct task_struct *p, int flags)
 {
-	struct rk_rq *rk_rq = &rq->rk;
 	struct sched_rk_entity *se = &p->rk;
 
-	list_add_tail(&p->rk.run_node, &rk_rq->queue);
-
 	se->on_rq = 1;
-	rk_rq->nr_running++;
+	se->on_dsq = 1;
+	se->rq = rq;
+
+	lock_dsq(rq);
+	list_add_tail(&se->run_node, &rk_dsq->list);
+	rk_dsq->nr_queued++;
+	rk_dsq->nr_running++;
+	unlock_dsq(rq);
+
 	add_nr_running(rq, 1);
 
-	DEBUG(rq, "enqueue pid=%d nr_running=%u\n",
-	          task_pid_nr(p), rq->rk.nr_running);
+	// DEBUG(rq, "enqueue pid=%d\n",
+	//           task_pid_nr(p));
 }
 
 static bool dequeue_task_rk(struct rq *rq, struct task_struct *p, int flags)
@@ -46,20 +88,23 @@ static bool dequeue_task_rk(struct rq *rq, struct task_struct *p, int flags)
 	if (!se->on_rq)
 		return false;
 
-	/* Currently running task is not stored on the queue */
-	if (p == rq->rk.curr)
-		rq->rk.curr = NULL;
-	else {
-		if (WARN_ON_ONCE(list_empty(&se->run_node))) {}
+	lock_dsq(rq);
+	if (se->on_dsq) {
 		list_del_init(&se->run_node);
+		rk_dsq->nr_queued--;
 	}
-
+	rk_dsq->nr_running--;
 	se->on_rq = 0;
-	rk_rq->nr_running--;
+	se->on_dsq = 0;
+	se->rq = NULL;
+	if (p == rk_rq->curr)
+		rk_rq->curr = NULL;
+	unlock_dsq(rq);
+
 	sub_nr_running(rq, 1);
 
-	DEBUG(rq, "dequeue pid=%d nr_running=%u\n",
-	          task_pid_nr(p), rq->rk.nr_running);
+	// DEBUG(rq, "dequeue pid=%d\n",
+	//           task_pid_nr(p));
 	return true;
 }
 
@@ -68,21 +113,64 @@ static void wakeup_preempt_rk(struct rq *rq, struct task_struct *p, int flags)
 	/* not implemented */
 }
 
+/* Assumes dst is locked. Keeps it locked on exit. */
+static struct task_struct *move_task_to_rq(struct task_struct *p, struct rq *dst)
+{
+	struct sched_rk_entity *se = &p->rk;
+	struct rq *src = se->rq;
+
+	if (src == dst)
+		return p;
+
+	if (src == NULL)
+		return NULL;
+
+	raw_spin_rq_unlock(dst);
+	raw_spin_rq_lock(src);
+
+	// Sanity checks
+	if (!se->on_rq || se->rq != src) {
+		raw_spin_rq_unlock(src);
+		raw_spin_rq_lock(dst);
+		return NULL;
+	}
+
+	set_task_cpu(p, cpu_of(dst));
+	se->rq = dst;
+
+	raw_spin_rq_unlock(src);
+	raw_spin_rq_lock(dst);
+
+	return p;
+}
+
 static struct task_struct *pick_task_rk(struct rq *rq, struct rq_flags *rf)
 {
 	struct rk_rq *rk_rq = &rq->rk;
 	struct task_struct *p;
 
-	if (rk_rq->curr && rk_rq->curr->rk.start_exec_ns + RORKE_TIMESLICE > rq_clock_task(rq))
-		return rk_rq->curr;
+	if (rk_rq->curr && rk_rq->curr->rk.start_exec_ns + rk_rq->timeslice > rq_clock_task(rq))
+		return rk_rq->curr; // timeslice not expired
 
-	if (list_empty(&rk_rq->queue))
+	lock_dsq(rq);
+	if (list_empty(&rk_dsq->list)) {
+		unlock_dsq(rq);
 		return NULL;
+	}
+	p = list_first_entry(&rk_dsq->list, struct task_struct, rk.run_node);
+	list_del_init(&p->rk.run_node); // it's a bit sketchy that we remove it here: if set_next_task isn't triggered, then p is lost
+	rk_dsq->nr_queued--;
+	p->rk.on_dsq = 0;
+	unlock_dsq(rq);
 
-	p = list_first_entry(&rk_rq->queue, struct task_struct, rk.run_node);
+	p = move_task_to_rq(p, rq);
 
-	DEBUG(rq, "pick_task candidate pid=%d nr_running=%u\n",
-					task_pid_nr(p), rq->rk.nr_running);
+	if (p) {
+		DEBUG(rq, "pick_task candidate pid=%d\n",
+						task_pid_nr(p));
+	} else {
+		DEBUG(rq, "pick_task no candidate\n");
+	}
 
 	return p;
 }
@@ -94,41 +182,54 @@ static void update_curr_rk(struct rq *rq)
 
 static void set_next_task_rk(struct rq *rq, struct task_struct *p, bool first)
 {
-	DEBUG(rq, "set_next pid=%d from_curr=%d nr_running=%u\n",
-          task_pid_nr(p), rq->rk.curr == p, rq->rk.nr_running);
+	DEBUG(rq, "set_next pid=%d from_curr=%d\n",
+          task_pid_nr(p), rq->rk.curr == p);
 
 	struct sched_rk_entity *se = &p->rk;
 
-	se->start_exec_ns = rq_clock_task(rq);
-
-	if (rq->rk.curr != p) {
-		list_del_init(&se->run_node); 
-		rq->rk.curr = p;
-	}
+	rq->rk.curr = p;
+	se->start_exec_ns = rq_clock_task(rq);	
 }
 
 static void put_prev_task_rk(struct rq *rq, struct task_struct *p,
                               struct task_struct *next)
 {
-	DEBUG(rq, "put_prev pid=%d next=%d curr=%d on_rq=%d nr_running=%u\n",
+	DEBUG(rq, "put_prev pid=%d next=%d curr=%d on_rq=%d\n",
 		task_pid_nr(p), next ? task_pid_nr(next) : -1, rq->rk.curr ? task_pid_nr(rq->rk.curr) : -1,
-		p->rk.on_rq, rq->rk.nr_running);
+		p->rk.on_rq);
 
-	if (!p->rk.on_rq)
+	struct sched_rk_entity *se = &p->rk;
+
+	if (!se->on_rq)
 		return;
 
-	/* If p was running, requeue it */
-	list_add_tail(&p->rk.run_node, &rq->rk.queue);
-    if (rq->rk.curr == p) {
+	if (rq->rk.curr == p) {
 		rq->rk.curr = NULL;
     }
+
+	se->on_dsq = 1;
+	lock_dsq(rq);
+	list_add_tail(&se->run_node, &rk_dsq->list);
+	rk_dsq->nr_queued++;
+	unlock_dsq(rq);
 }
 
 static void task_tick_rk(struct rq *rq, struct task_struct *p, int queued)
 {
 	struct rk_rq *rk_rq = &rq->rk;
+	bool have_queued_tasks;
 
-	if (rk_rq->curr == p && rk_rq->nr_running > 1 && p->rk.start_exec_ns + RORKE_TIMESLICE < rq_clock_task(rq)) {
+	if (rk_rq->curr != p)
+		return;
+
+	if (p->rk.start_exec_ns + rk_rq->timeslice > rq_clock_task(rq))
+		return; // not expired yet
+
+	lock_dsq(rq);
+	have_queued_tasks = (rk_dsq->nr_queued > 0);
+	unlock_dsq(rq);
+
+	if (have_queued_tasks) {
 		DEBUG(rq, "task_tick resched pid=%d\n", task_pid_nr(p));
 		resched_curr(rq);
 	}
