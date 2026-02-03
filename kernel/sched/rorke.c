@@ -9,22 +9,29 @@
 	do {} while (0)
 	// printk(KERN_ERR "rorke[cpu=%d] " fmt, cpu_of(rq), ##__VA_ARGS__) \
 
-extern struct rk_dsq *rk_dsq;
+void lock_dsq(struct rk_rq *rk_rq);
+void unlock_dsq(struct rk_rq *rk_rq);
 
-void lock_dsq(struct rq *rq);
-void unlock_dsq(struct rq *rq);
-
-void init_rk_dsq(struct rk_dsq *dsq)
+struct rk_dsq *alloc_init_rk_dsq(void)
 {
+	struct rk_dsq *dsq;
+
+	dsq = kmalloc(sizeof(*dsq), GFP_KERNEL);
+	if (!dsq)
+		BUG();
+
 	spin_lock_init(&dsq->lock);
     INIT_LIST_HEAD(&dsq->list);
 	dsq->nr_queued = 0;
 	dsq->nr_running = 0;
 	dsq->timeslice = RORKE_DEFAULT_TIMESLICE;
+
+	return dsq;
 }
 
-void init_rk_rq(struct rk_rq *rk_rq)
+void init_rk_rq(struct rk_rq *rk_rq, struct rk_dsq *dsq)
 {
+	rk_rq->dsq = dsq;
 	rk_rq->curr = NULL;
 	rk_rq->timeslice = RORKE_DEFAULT_TIMESLICE;
 }
@@ -38,24 +45,30 @@ void init_rk_entity(struct sched_rk_entity *entity)
 	entity->start_exec_ns = 0;
 }
 
-void lock_dsq(struct rq *rq)
+void lock_dsq(struct rk_rq *rk_rq)
 {
+	struct rk_dsq *rk_dsq = rk_rq->dsq;
+
 	spin_lock(&rk_dsq->lock);
-	rq->rk.timeslice = rk_dsq->timeslice; // piggyback timeslice update
+	rk_rq->timeslice = rk_dsq->timeslice; // piggyback timeslice update
 }
 
-void unlock_dsq(struct rq *rq)
+void unlock_dsq(struct rk_rq *rk_rq)
 {
+	struct rk_dsq *rk_dsq = rk_rq->dsq;
+
 	spin_unlock(&rk_dsq->lock);
 }
 
 bool rk_can_stop_tick(struct rq *rq)
 {
+	struct rk_rq *rk_rq = &rq->rk;
+	struct rk_dsq *rk_dsq = rk_rq->dsq;
 	bool no_rorke_tasks;
 
-	lock_dsq(rq);
+	lock_dsq(rk_rq);
 	no_rorke_tasks = (rk_dsq->nr_running == 0);
-	unlock_dsq(rq);
+	unlock_dsq(rk_rq);
 
 	return no_rorke_tasks;
 }
@@ -63,16 +76,18 @@ bool rk_can_stop_tick(struct rq *rq)
 static void enqueue_task_rk(struct rq *rq, struct task_struct *p, int flags)
 {
 	struct sched_rk_entity *se = &p->rk;
+	struct rk_rq *rk_rq = &rq->rk;
+	struct rk_dsq *rk_dsq = rk_rq->dsq;
 
 	se->on_rq = 1;
 	se->on_dsq = 1;
 	se->rq = rq;
 
-	lock_dsq(rq);
+	lock_dsq(rk_rq);
 	list_add_tail(&se->run_node, &rk_dsq->list);
 	rk_dsq->nr_queued++;
 	rk_dsq->nr_running++;
-	unlock_dsq(rq);
+	unlock_dsq(rk_rq);
 
 	add_nr_running(rq, 1);
 
@@ -82,13 +97,14 @@ static void enqueue_task_rk(struct rq *rq, struct task_struct *p, int flags)
 
 static bool dequeue_task_rk(struct rq *rq, struct task_struct *p, int flags)
 {
-	struct rk_rq *rk_rq = &rq->rk;
 	struct sched_rk_entity *se = &p->rk;
+	struct rk_rq *rk_rq = &rq->rk;
+	struct rk_dsq *rk_dsq = rk_rq->dsq;
 
 	if (!se->on_rq)
 		return false;
 
-	lock_dsq(rq);
+	lock_dsq(rk_rq);
 	if (se->on_dsq) {
 		list_del_init(&se->run_node);
 		rk_dsq->nr_queued--;
@@ -99,7 +115,7 @@ static bool dequeue_task_rk(struct rq *rq, struct task_struct *p, int flags)
 	se->rq = NULL;
 	if (p == rk_rq->curr)
 		rk_rq->curr = NULL;
-	unlock_dsq(rq);
+	unlock_dsq(rk_rq);
 
 	sub_nr_running(rq, 1);
 
@@ -147,21 +163,22 @@ static struct task_struct *move_task_to_rq(struct task_struct *p, struct rq *dst
 static struct task_struct *pick_task_rk(struct rq *rq, struct rq_flags *rf)
 {
 	struct rk_rq *rk_rq = &rq->rk;
+	struct rk_dsq *rk_dsq = rk_rq->dsq;
 	struct task_struct *p;
 
 	if (rk_rq->curr && rk_rq->curr->rk.start_exec_ns + rk_rq->timeslice > rq_clock_task(rq))
 		return rk_rq->curr; // timeslice not expired
 
-	lock_dsq(rq);
+	lock_dsq(rk_rq);
 	if (list_empty(&rk_dsq->list)) {
-		unlock_dsq(rq);
+		unlock_dsq(rk_rq);
 		return NULL;
 	}
 	p = list_first_entry(&rk_dsq->list, struct task_struct, rk.run_node);
 	list_del_init(&p->rk.run_node); // it's a bit sketchy that we remove it here: if set_next_task isn't triggered, then p is lost
 	rk_dsq->nr_queued--;
 	p->rk.on_dsq = 0;
-	unlock_dsq(rq);
+	unlock_dsq(rk_rq);
 
 	p = move_task_to_rq(p, rq);
 
@@ -199,24 +216,27 @@ static void put_prev_task_rk(struct rq *rq, struct task_struct *p,
 		p->rk.on_rq);
 
 	struct sched_rk_entity *se = &p->rk;
+	struct rk_rq *rk_rq = &rq->rk;
+	struct rk_dsq *rk_dsq = rk_rq->dsq;
 
 	if (!se->on_rq)
 		return;
 
-	if (rq->rk.curr == p) {
-		rq->rk.curr = NULL;
+	if (rk_rq->curr == p) {
+		rk_rq->curr = NULL;
     }
 
 	se->on_dsq = 1;
-	lock_dsq(rq);
+	lock_dsq(rk_rq);
 	list_add_tail(&se->run_node, &rk_dsq->list);
 	rk_dsq->nr_queued++;
-	unlock_dsq(rq);
+	unlock_dsq(rk_rq);
 }
 
 static void task_tick_rk(struct rq *rq, struct task_struct *p, int queued)
 {
 	struct rk_rq *rk_rq = &rq->rk;
+	struct rk_dsq *rk_dsq = rk_rq->dsq;
 	bool have_queued_tasks;
 
 	if (rk_rq->curr != p)
@@ -225,9 +245,9 @@ static void task_tick_rk(struct rq *rq, struct task_struct *p, int queued)
 	if (p->rk.start_exec_ns + rk_rq->timeslice > rq_clock_task(rq))
 		return; // not expired yet
 
-	lock_dsq(rq);
+	lock_dsq(rk_rq);
 	have_queued_tasks = (rk_dsq->nr_queued > 0);
-	unlock_dsq(rq);
+	unlock_dsq(rk_rq);
 
 	if (have_queued_tasks) {
 		DEBUG(rq, "task_tick resched pid=%d\n", task_pid_nr(p));

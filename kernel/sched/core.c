@@ -8620,7 +8620,7 @@ void __init sched_init(void)
 	autogroup_init(&init_task);
 #endif /* CONFIG_CGROUP_SCHED */
 
-	init_rk_dsq(rk_dsq);
+	struct rk_dsq *dsq = alloc_init_rk_dsq();
 
 	for_each_possible_cpu(i) {
 		struct rq *rq;
@@ -8630,7 +8630,7 @@ void __init sched_init(void)
 		rq->nr_running = 0;
 		rq->calc_load_active = 0;
 		rq->calc_load_update = jiffies + LOAD_FREQ;
-		init_rk_rq(&rq->rk);
+		init_rk_rq(&rq->rk, dsq);
 		init_cfs_rq(&rq->cfs);
 		init_rt_rq(&rq->rt);
 		init_dl_rq(&rq->dl);

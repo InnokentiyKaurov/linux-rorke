@@ -922,7 +922,8 @@ struct dl_rq {
 };
 
 struct rk_rq {
-	struct task_struct *curr;
+	struct rk_dsq		*dsq;
+	struct task_struct	*curr;
 	u64					timeslice; // ns
 };
 
@@ -3286,8 +3287,9 @@ print_numa_stats(struct seq_file *m, int node, unsigned long tsf,
 extern void init_cfs_rq(struct cfs_rq *cfs_rq);
 extern void init_rt_rq(struct rt_rq *rt_rq);
 extern void init_dl_rq(struct dl_rq *dl_rq);
-extern void init_rk_dsq(struct rk_dsq *dsq);
-extern void init_rk_rq(struct rk_rq *rk_rq);
+extern void init_rk_rq(struct rk_rq *rk_rq, struct rk_dsq *dsq);
+
+extern struct rk_dsq *alloc_init_rk_dsq(void);
 
 extern bool rk_can_stop_tick(struct rq *rq);
 
