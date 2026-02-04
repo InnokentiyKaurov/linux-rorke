@@ -41,6 +41,7 @@ void init_rk_entity(struct sched_rk_entity *entity)
 	INIT_LIST_HEAD(&entity->run_node);
 	entity->on_rq = 0;
 	entity->on_dsq = 0;
+	entity->migrating = 0;
 	entity->rq = NULL;
 	entity->start_exec_ns = 0;
 }
@@ -80,19 +81,21 @@ static void enqueue_task_rk(struct rq *rq, struct task_struct *p, int flags)
 	struct rk_dsq *rk_dsq = rk_rq->dsq;
 
 	se->on_rq = 1;
-	se->on_dsq = 1;
 	se->rq = rq;
 
-	lock_dsq(rk_rq);
-	list_add_tail(&se->run_node, &rk_dsq->list);
-	rk_dsq->nr_queued++;
-	rk_dsq->nr_running++;
-	unlock_dsq(rk_rq);
+	if (!se->migrating) {
+		lock_dsq(rk_rq);
+		list_add_tail(&se->run_node, &rk_dsq->list);
+		se->on_dsq = 1;
+		rk_dsq->nr_queued++;
+		rk_dsq->nr_running++;
+		unlock_dsq(rk_rq);
+	}
 
 	add_nr_running(rq, 1);
 
-	// DEBUG(rq, "enqueue pid=%d\n",
-	//           task_pid_nr(p));
+	DEBUG(rq, "enqueue pid=%d\n",
+	          task_pid_nr(p));
 }
 
 static bool dequeue_task_rk(struct rq *rq, struct task_struct *p, int flags)
@@ -104,23 +107,26 @@ static bool dequeue_task_rk(struct rq *rq, struct task_struct *p, int flags)
 	if (!se->on_rq)
 		return false;
 
-	lock_dsq(rk_rq);
-	if (se->on_dsq) {
-		list_del_init(&se->run_node);
-		rk_dsq->nr_queued--;
-	}
-	rk_dsq->nr_running--;
 	se->on_rq = 0;
-	se->on_dsq = 0;
 	se->rq = NULL;
-	if (p == rk_rq->curr)
-		rk_rq->curr = NULL;
-	unlock_dsq(rk_rq);
+
+	if (!se->migrating) {
+		lock_dsq(rk_rq);
+		if (se->on_dsq) {
+			list_del_init(&se->run_node);
+			rk_dsq->nr_queued--;
+		}
+		rk_dsq->nr_running--;
+		se->on_dsq = 0;
+		if (p == rk_rq->curr)
+			rk_rq->curr = NULL;
+		unlock_dsq(rk_rq);
+	}
 
 	sub_nr_running(rq, 1);
 
-	// DEBUG(rq, "dequeue pid=%d\n",
-	//           task_pid_nr(p));
+	DEBUG(rq, "dequeue pid=%d\n",
+	          task_pid_nr(p));
 	return true;
 }
 
@@ -151,17 +157,31 @@ static struct task_struct *move_task_to_rq(struct task_struct *p, struct rq *dst
 		return NULL;
 	}
 
+	se->migrating = 1;
+	deactivate_task(src, p, 0);
 	set_task_cpu(p, cpu_of(dst));
-	se->rq = dst;
-
-	sub_nr_running(src, 1);
 
 	raw_spin_rq_unlock(src);
 	raw_spin_rq_lock(dst);
 
-	add_nr_running(dst, 1);
+	activate_task(dst, p, 0);
+	se->migrating = 0;
 
 	return p;
+}
+
+// Assumes dsq is locked
+static struct task_struct *find_movable_task_on_dsq(struct rk_dsq *rk_dsq, int cpu)
+{
+	struct task_struct *p;
+
+	list_for_each_entry(p, &rk_dsq->list, rk.run_node) {
+		// Test CPU affinity
+		if (cpumask_test_cpu(cpu, p->cpus_ptr))
+			return p;
+	}
+
+	return NULL;
 }
 
 static struct task_struct *pick_task_rk(struct rq *rq, struct rq_flags *rf)
@@ -178,7 +198,11 @@ static struct task_struct *pick_task_rk(struct rq *rq, struct rq_flags *rf)
 		unlock_dsq(rk_rq);
 		return NULL;
 	}
-	p = list_first_entry(&rk_dsq->list, struct task_struct, rk.run_node);
+	p = find_movable_task_on_dsq(rk_dsq, cpu_of(rq));
+	if (!p) {
+		unlock_dsq(rk_rq);
+		return NULL;
+	}
 	list_del_init(&p->rk.run_node); // it's a bit sketchy that we remove it here: if set_next_task isn't triggered, then p is lost
 	rk_dsq->nr_queued--;
 	p->rk.on_dsq = 0;
@@ -223,7 +247,7 @@ static void put_prev_task_rk(struct rq *rq, struct task_struct *p,
 	struct rk_rq *rk_rq = &rq->rk;
 	struct rk_dsq *rk_dsq = rk_rq->dsq;
 
-	if (!se->on_rq)
+	if (!se->on_rq || se->migrating)
 		return;
 
 	if (rk_rq->curr == p) {

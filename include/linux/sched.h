@@ -752,6 +752,7 @@ struct sched_rk_entity {
 	struct list_head 	run_node;
 	bool 				on_rq;
 	bool 				on_dsq;
+	bool				migrating; // Task is moved between cpus by Rorke
 	struct rq 			*rq;
 	u64 				start_exec_ns;
 };
