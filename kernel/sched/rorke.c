@@ -154,8 +154,12 @@ static struct task_struct *move_task_to_rq(struct task_struct *p, struct rq *dst
 	set_task_cpu(p, cpu_of(dst));
 	se->rq = dst;
 
+	sub_nr_running(src, 1);
+
 	raw_spin_rq_unlock(src);
 	raw_spin_rq_lock(dst);
+
+	add_nr_running(dst, 1);
 
 	return p;
 }
