@@ -80,18 +80,20 @@ static void enqueue_task_rk(struct rq *rq, struct task_struct *p, int flags)
 	struct rk_rq *rk_rq = &rq->rk;
 	struct rk_dsq *rk_dsq = rk_rq->dsq;
 
-	se->on_rq = 1;
-	se->rq = rq;
-
 	if (!se->migrating) {
 		lock_dsq(rk_rq);
-		list_add_tail(&se->run_node, &rk_dsq->list);
-		se->on_dsq = 1;
-		rk_dsq->nr_queued++;
+		// Check if task already running on this cpu
+		if (!task_current_donor(rq, p)) {
+			list_add_tail(&se->run_node, &rk_dsq->list);
+			se->on_dsq = 1;
+			rk_dsq->nr_queued++;
+		}
 		rk_dsq->nr_running++;
 		unlock_dsq(rk_rq);
 	}
 
+	se->on_rq = 1;
+	se->rq = rq;
 	add_nr_running(rq, 1);
 
 	DEBUG(rq, "enqueue pid=%d\n",
@@ -283,6 +285,12 @@ static void task_tick_rk(struct rq *rq, struct task_struct *p, int queued)
 	}
 }
 
+// switching_to -> enqueue -> set_next_task
+static void switching_to_rk(struct rq *rq, struct task_struct *p)
+{
+	/* not implemented */	
+}
+
 static void prio_changed_rk(struct rq *rq, struct task_struct *p, long long unsigned int oldprio)
 {
 	/* not implemented */
@@ -322,6 +330,7 @@ DEFINE_SCHED_CLASS(rorke) = {
 	.task_tick			= task_tick_rk,
 
 	.prio_changed		= prio_changed_rk,
+	.switching_to		= switching_to_rk,
 	.switched_to		= switched_to_rk,
 	.update_curr		= update_curr_rk,
 };
