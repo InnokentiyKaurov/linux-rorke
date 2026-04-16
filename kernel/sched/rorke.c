@@ -94,6 +94,7 @@ static void enqueue_task_rk(struct rq *rq, struct task_struct *p, int flags)
 
 	se->on_rq = 1;
 	se->rq = rq;
+	add_nr_running(rq, 1);
 
 	DEBUG(rq, "enqueue pid=%d\n",
 	          task_pid_nr(p));
@@ -123,6 +124,8 @@ static bool dequeue_task_rk(struct rq *rq, struct task_struct *p, int flags)
 			rk_rq->curr = NULL;
 		unlock_dsq(rk_rq);
 	}
+
+	sub_nr_running(rq, 1);
 
 	DEBUG(rq, "dequeue pid=%d\n",
 	          task_pid_nr(p));
