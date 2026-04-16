@@ -1,4 +1,4 @@
-all: fibonacci
+all: fibonacci fibonacci_normal
 
 .PHONY: clean
 clean:

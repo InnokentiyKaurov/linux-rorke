@@ -94,7 +94,6 @@ static void enqueue_task_rk(struct rq *rq, struct task_struct *p, int flags)
 
 	se->on_rq = 1;
 	se->rq = rq;
-	add_nr_running(rq, 1);
 
 	DEBUG(rq, "enqueue pid=%d\n",
 	          task_pid_nr(p));
@@ -125,8 +124,6 @@ static bool dequeue_task_rk(struct rq *rq, struct task_struct *p, int flags)
 		unlock_dsq(rk_rq);
 	}
 
-	sub_nr_running(rq, 1);
-
 	DEBUG(rq, "dequeue pid=%d\n",
 	          task_pid_nr(p));
 	return true;
@@ -149,24 +146,15 @@ static struct task_struct *move_task_to_rq(struct task_struct *p, struct rq *dst
 	if (src == NULL)
 		return NULL;
 
-	raw_spin_rq_unlock(dst);
-	raw_spin_rq_lock(src);
-
 	// Sanity checks
 	if (!se->on_rq || se->rq != src) {
-		raw_spin_rq_unlock(src);
-		raw_spin_rq_lock(dst);
 		return NULL;
 	}
 
 	se->migrating = 1;
-	deactivate_task(src, p, 0);
-	set_task_cpu(p, cpu_of(dst));
-
-	raw_spin_rq_unlock(src);
-	raw_spin_rq_lock(dst);
-
-	activate_task(dst, p, 0);
+	dequeue_task_rk(src, p, 0);
+	__set_task_cpu(p, cpu_of(dst));
+	enqueue_task_rk(dst, p, 0);
 	se->migrating = 0;
 
 	return p;
